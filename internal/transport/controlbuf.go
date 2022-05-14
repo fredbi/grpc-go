@@ -22,10 +22,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
@@ -313,6 +315,10 @@ func newControlBuffer(done <-chan struct{}) *controlBuffer {
 func (c *controlBuffer) throttle() {
 	ch, _ := c.trfChan.Load().(chan struct{})
 	if ch != nil {
+		t0 := time.Now()
+		defer func() {
+			log.Printf("DEBUG(fred): wait time on control buffer throttle: %v", time.Since(t0))
+		}()
 		select {
 		case <-ch:
 		case <-c.done:

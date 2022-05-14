@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -200,6 +201,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 			cancel()
 		}
 	}()
+	log.Println("DEBUG(fred): newHTTP2Client")
 
 	// gRPC, resolver, balancer etc. can specify arbitrary data in the
 	// Attributes field of resolver.Address, which is shoved into connectCtx
@@ -207,6 +209,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	// address specific arbitrary data to reach custom dialers and credential handshakers.
 	connectCtx = icredentials.NewClientHandshakeInfoContext(connectCtx, credentials.ClientHandshakeInfo{Attributes: addr.Attributes})
 
+	log.Printf("DEBUG(fred): dial with options: %#v", opts)
 	conn, err := dial(connectCtx, opts.Dialer, addr, opts.UseProxy, opts.UserAgent)
 	if err != nil {
 		if opts.FailOnNonTempDialError {
@@ -292,6 +295,9 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	if opts.MaxHeaderListSize != nil {
 		maxHeaderListSize = *opts.MaxHeaderListSize
 	}
+	log.Printf("DEBUG(fred): dynamicWindow: %t", dynamicWindow)
+	log.Printf("DEBUG(fred): readBufSize: %d", readBufSize)
+	log.Printf("DEBUG(fred): maxHeaderListSize: %d", maxHeaderListSize)
 	t := &http2Client{
 		ctx:                   ctx,
 		ctxDone:               ctx.Done(), // Cache Done chan.
@@ -335,6 +341,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 		t.initialWindowSize = opts.InitialWindowSize
 		dynamicWindow = false
 	}
+	log.Printf("DEBUG(fred): client initial window: %d", t.initialWindowSize)
 	if dynamicWindow {
 		t.bdpEst = &bdpEstimator{
 			bdp:               initialWindowSize,
@@ -362,6 +369,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
 	// dispatches the frame to the corresponding stream entity.
+	log.Printf("DEBUG(fred): start reader goroutine")
 	go t.reader()
 
 	// Send connection preface to server.
@@ -379,17 +387,20 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	var ss []http2.Setting
 
 	if t.initialWindowSize != defaultWindowSize {
+		log.Printf("DEBUG(fred): override default http2 window: %d", t.initialWindowSize)
 		ss = append(ss, http2.Setting{
 			ID:  http2.SettingInitialWindowSize,
 			Val: uint32(t.initialWindowSize),
 		})
 	}
 	if opts.MaxHeaderListSize != nil {
+		log.Printf("DEBUG(fred): override default http2 MaxHeaderListSize: %d", *opts.MaxHeaderListSize)
 		ss = append(ss, http2.Setting{
 			ID:  http2.SettingMaxHeaderListSize,
 			Val: *opts.MaxHeaderListSize,
 		})
 	}
+	log.Printf("DEBUG(fred): write frame settings: %#v", ss)
 	err = t.framer.fr.WriteSettings(ss...)
 	if err != nil {
 		err = connectionErrorf(true, err, "transport: failed to write initial settings frame: %v", err)
@@ -398,6 +409,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr resolver.Address, opts
 	}
 	// Adjust the connection flow control window if needed.
 	if delta := uint32(icwz - defaultWindowSize); delta > 0 {
+		log.Printf("DEBUG(fred): adjust connect flow control window: %d", delta)
 		if err := t.framer.fr.WriteWindowUpdate(0, delta); err != nil {
 			err = connectionErrorf(true, err, "transport: failed to write window update: %v", err)
 			t.Close(err)
@@ -446,6 +458,7 @@ func (t *http2Client) newStream(ctx context.Context, callHdr *CallHdr) *Stream {
 	// The client side stream context should have exactly the same life cycle with the user provided context.
 	// That means, s.ctx should be read-only. And s.ctx is done iff ctx is done.
 	// So we use the original context here instead of creating a copy.
+	log.Println("DEBUG(fred): newStream")
 	s.ctx = ctx
 	s.trReader = &transportReader{
 		reader: &recvBufferReader{
@@ -992,6 +1005,7 @@ func (t *http2Client) adjustWindow(s *Stream, n uint32) {
 // exceeds the corresponding threshold.
 func (t *http2Client) updateWindow(s *Stream, n uint32) {
 	if w := s.fc.onRead(n); w > 0 {
+		log.Printf("DEBUG(fred): update window onRead: %d", w)
 		t.controlBuf.put(&outgoingWindowUpdate{streamID: s.id, increment: w})
 	}
 }
@@ -1009,6 +1023,7 @@ func (t *http2Client) updateFlowControl(n uint32) {
 		t.initialWindowSize = int32(n)
 		return true
 	}
+	log.Printf("DEBUG(fred): outgoing window update (assumed from BCP): %d", n)
 	t.controlBuf.executeAndPut(updateIWS, &outgoingWindowUpdate{streamID: 0, increment: t.fc.newLimit(n)})
 	t.controlBuf.put(&outgoingSettings{
 		ss: []http2.Setting{
@@ -1022,6 +1037,7 @@ func (t *http2Client) updateFlowControl(n uint32) {
 
 func (t *http2Client) handleData(f *http2.DataFrame) {
 	size := f.Header().Length
+	log.Printf("DEBUG(fred): received data frame. size=%d", size)
 	var sendBDPPing bool
 	if t.bdpEst != nil {
 		sendBDPPing = t.bdpEst.add(size)
@@ -1036,6 +1052,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 	// inactive streams.
 	//
 	if w := t.fc.onData(size); w > 0 {
+		log.Printf("DEBUG(fred): outgoing window update (handleData): %d", w)
 		t.controlBuf.put(&outgoingWindowUpdate{
 			streamID:  0,
 			increment: w,
@@ -1064,8 +1081,11 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			t.closeStream(s, io.EOF, true, http2.ErrCodeFlowControl, status.New(codes.Internal, err.Error()), nil, false)
 			return
 		}
+		log.Printf("DEBUG(fred): received data frame. size=%d", size)
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
+			log.Printf("DEBUG(fred): received (padded) data frame")
 			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
+				log.Printf("DEBUG(fred): (on padded frame) outgoing window update with=%d", w)
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
 		}
@@ -1073,6 +1093,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
 		if len(f.Data()) > 0 {
+			log.Printf("DEBUG(fred): get buffer from pool")
 			buffer := t.bufferPool.get()
 			buffer.Reset()
 			buffer.Write(f.Data())
@@ -1116,20 +1137,24 @@ func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
 	if f.IsAck() {
 		return
 	}
+	log.Printf("DEBUG(fred): handle settings")
 	var maxStreams *uint32
 	var ss []http2.Setting
 	var updateFuncs []func()
 	f.ForeachSetting(func(s http2.Setting) error {
 		switch s.ID {
 		case http2.SettingMaxConcurrentStreams:
+			log.Printf("DEBUG(fred): received max concurrent streams: %d", s.Val)
 			maxStreams = new(uint32)
 			*maxStreams = s.Val
 		case http2.SettingMaxHeaderListSize:
+			log.Printf("DEBUG(fred): received max header list size: %d", s.Val)
 			updateFuncs = append(updateFuncs, func() {
 				t.maxSendHeaderListSize = new(uint32)
 				*t.maxSendHeaderListSize = s.Val
 			})
 		default:
+			log.Printf("DEBUG(fred): received setting: %v = %d", s.ID, s.Val)
 			ss = append(ss, s)
 		}
 		return nil
@@ -1142,6 +1167,7 @@ func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
 		ss: ss,
 	}
 	if maxStreams != nil {
+		log.Printf("DEBUG(fred): update streams quote: %d", *maxStreams)
 		updateStreamQuota := func() {
 			delta := int64(*maxStreams) - int64(t.maxConcurrentStreams)
 			t.maxConcurrentStreams = *maxStreams
