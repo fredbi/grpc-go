@@ -1167,7 +1167,7 @@ func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
 		ss: ss,
 	}
 	if maxStreams != nil {
-		log.Printf("DEBUG(fred): update streams quote: %d", *maxStreams)
+		log.Printf("DEBUG(fred): update streams quota: %d", *maxStreams)
 		updateStreamQuota := func() {
 			delta := int64(*maxStreams) - int64(t.maxConcurrentStreams)
 			t.maxConcurrentStreams = *maxStreams
@@ -1346,6 +1346,7 @@ func (t *http2Client) operateHeaders(frame *http2.MetaHeadersFrame) {
 	}
 
 	for _, hf := range frame.Fields {
+		log.Printf("header name: %s: %s", hf.Name, hf.Value)
 		switch hf.Name {
 		case "content-type":
 			if _, validContentType := grpcutil.ContentSubtype(hf.Value); !validContentType {
@@ -1578,9 +1579,9 @@ func (t *http2Client) reader() {
 		}
 		debugReceived++
 		if debugReceived%10000 == 0 {
-			sinceLast := time.Since(t0)
-			throughput := float64(debugReceived-debugLastReceived) / float64(sinceLast*time.Second)
-			log.Printf("reader received %d frames in %v (inner thoughput: %f)", debugReceived, sinceLast, throughput)
+			sinceLast := time.Since(t0).Seconds()
+			throughput := float64(debugReceived-debugLastReceived) / sinceLast
+			log.Printf("reader received %d frames in %v (inner thoughput: %f)", debugReceived-debugLastReceived, sinceLast, throughput)
 			t0 = time.Now()
 			debugLastReceived = debugReceived
 		}
