@@ -1037,9 +1037,9 @@ func (t *http2Client) updateFlowControl(n uint32) {
 
 func (t *http2Client) handleData(f *http2.DataFrame) {
 	size := f.Header().Length
-	log.Printf("DEBUG(fred): received data frame. size=%d", size)
 	var sendBDPPing bool
 	if t.bdpEst != nil {
+		log.Printf("DEBUG(fred): BDP kicks in: size=%d", size)
 		sendBDPPing = t.bdpEst.add(size)
 	}
 	// Decouple connection's flow control from application's read.
@@ -1081,7 +1081,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			t.closeStream(s, io.EOF, true, http2.ErrCodeFlowControl, status.New(codes.Internal, err.Error()), nil, false)
 			return
 		}
-		log.Printf("DEBUG(fred): received data frame. size=%d", size)
+		// log.Printf("DEBUG(fred): received data frame. size=%d", size)
 		if f.Header().Flags.Has(http2.FlagDataPadded) {
 			log.Printf("DEBUG(fred): received (padded) data frame")
 			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
@@ -1093,7 +1093,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 		// guarantee f.Data() is consumed before the arrival of next frame.
 		// Can this copy be eliminated?
 		if len(f.Data()) > 0 {
-			log.Printf("DEBUG(fred): get buffer from pool")
+			// log.Printf("DEBUG(fred): get buffer from pool")
 			buffer := t.bufferPool.get()
 			buffer.Reset()
 			buffer.Write(f.Data())
@@ -1308,6 +1308,8 @@ func (t *http2Client) operateHeaders(frame *http2.MetaHeadersFrame) {
 	atomic.StoreUint32(&s.bytesReceived, 1)
 	initialHeader := atomic.LoadUint32(&s.headerChanClosed) == 0
 
+	log.Printf("DEBUG(fred): received header frame")
+
 	if !initialHeader && !endStream {
 		// As specified by gRPC over HTTP2, a HEADERS frame (and associated CONTINUATION frames) can only appear at the start or end of a stream. Therefore, second HEADERS frame must have EOS bit set.
 		st := status.New(codes.Internal, "a HEADERS frame cannot appear in the middle of a stream")
@@ -1519,6 +1521,8 @@ func (t *http2Client) reader() {
 	t.handleSettings(sf, true)
 
 	// loop to keep reading incoming messages on this transport.
+	var debugReceived, debugLastReceived uint32
+	t0 := time.Now()
 	for {
 		t.controlBuf.throttle()
 		frame, err := t.framer.fr.ReadFrame()
@@ -1571,6 +1575,14 @@ func (t *http2Client) reader() {
 			if logger.V(logLevel) {
 				logger.Errorf("transport: http2Client.reader got unhandled frame type %v.", frame)
 			}
+		}
+		debugReceived++
+		if debugReceived%10000 == 0 {
+			sinceLast := time.Since(t0)
+			throughput := float64(debugReceived-debugLastReceived) / float64(sinceLast*time.Second)
+			log.Printf("reader received %d frames in %v (inner thoughput: %f)", debugReceived, sinceLast, throughput)
+			t0 = time.Now()
+			debugLastReceived = debugReceived
 		}
 	}
 }
