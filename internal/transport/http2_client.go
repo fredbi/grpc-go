@@ -1581,7 +1581,7 @@ func (t *http2Client) reader() {
 		if debugReceived%10000 == 0 {
 			sinceLast := time.Since(t0).Seconds()
 			throughput := float64(debugReceived-debugLastReceived) / sinceLast
-			log.Printf("reader received %d frames in %v (inner thoughput: %f)", debugReceived-debugLastReceived, sinceLast, throughput)
+			log.Printf("reader received %d frames (cumulative: %d) in %v (inner thoughput: %f)", debugReceived-debugLastReceived, debugReceived, sinceLast, throughput)
 			t0 = time.Now()
 			debugLastReceived = debugReceived
 		}
